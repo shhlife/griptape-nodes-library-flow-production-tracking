@@ -1,0 +1,132 @@
+{
+  "name": "Flow Production Tracking Library",
+  "library_schema_version": "0.2.0",
+  "settings": [
+    {
+      "description": "Configuration settings for Flow Production Tracking",
+      "category": "nodes.Autodesk",
+      "contents": {
+        "SHOTGRID_API_KEY": "$SHOTGRID_API_KEY",
+        "SHOTGRID_SCRIPT_NAME": "$SHOTGRID_SCRIPT_NAME",
+        "SHOTGRID_URL": "$SHOTGRID_URL",
+        "SHOTGRID_USERNAME": "$SHOTGRID_USERNAME",
+        "SHOTGRID_PASSWORD": "$SHOTGRID_PASSWORD"
+      }
+    }
+  ],
+  "metadata": {
+    "author": "Griptape",
+    "description": "Collection of nodes for accessing Flow Production Tracking.",
+    "library_version": "0.1.1",
+    "engine_version": "0.39.0",
+    "tags": ["Autodesk", "AI", "Flow Production Tracking"],
+    "dependencies": {
+      "pip_dependencies": [
+        "httpx",
+        "Pillow"
+      ]
+  }
+
+  },
+  "categories": [
+    {
+      "autodesk": {
+        "color": "border-blue-500",
+        "title": "Autodesk Flow",
+        "description": "Autodesk Flow Production Tracking nodes",
+        "icon": "table-2"
+      }
+    }
+  ],
+  "nodes": [
+    {
+      "class_name": "FlowListProjects",
+      "file_path": "flow_list_projects.py",
+      "metadata": {
+        "category": "autodesk",
+        "group": "projects",
+        "description": "Griptape Node that lists all projects in ShotGrid.",
+        "display_name": "List Projects"
+      }
+    },
+    {
+      "class_name": "FlowCreateProject",
+      "file_path": "flow_create_project.py",
+      "metadata": {
+        "category": "autodesk",
+        "group": "projects",
+        "description": "Griptape Node that creates a new project in ShotGrid. Can optionally upload a thumbnail image for the project.",
+        "display_name": "Create Project"
+      }
+    },
+    {
+      "class_name": "FlowUpdateProject",
+      "file_path": "flow_update_project.py",
+      "metadata": {
+        "category": "autodesk",
+        "group": "projects",
+        "description": "Griptape Node that updates project information and thumbnail in ShotGrid. Can update name, code, description, and thumbnail image.",
+        "display_name": "Update Project"
+      }
+    },
+    {
+      "class_name": "FlowGetProject",
+      "file_path": "flow_get_project.py",
+      "metadata": {
+        "category": "autodesk",
+        "group": "projects",
+        "description": "Griptape Node that retrieves a single project by ID from ShotGrid. Returns complete project data including thumbnail information.",
+        "display_name": "Get Project"
+      }
+    },
+    {
+      "class_name": "FlowGetSchemas",
+      "file_path": "flow_get_schemas.py",
+      "metadata": {
+        "category": "autodesk",
+        "description": "Griptape Node that retrieves ShotGrid schema information for entities.",
+        "display_name": "Get Schemas"
+      }
+    },
+    {
+      "class_name": "FlowGetAssetTypes",
+      "file_path": "flow_get_asset_types.py",
+      "metadata": {
+        "category": "autodesk",
+        "group": "assets",
+        "description": "Griptape Node that retrieves available asset types for a specific project.",
+        "display_name": "Get Asset Types"
+      }
+    },
+    {
+      "class_name": "FlowListAssets",
+      "file_path": "flow_list_assets.py",
+      "metadata": {
+        "category": "autodesk",
+        "group": "assets",
+        "description": "Griptape Node that lists assets in a project with filtering by asset type.",
+        "display_name": "List Assets"
+      }
+    },
+    {
+      "class_name": "FlowCreateAsset",
+      "file_path": "flow_create_asset.py",
+      "metadata": {
+        "category": "autodesk",
+        "group": "assets",
+        "description": "Griptape Node that creates a new asset in a ShotGrid project.",
+        "display_name": "Create Asset"
+      }
+    },
+    {
+      "class_name": "FlowUpdateAsset",
+      "file_path": "flow_update_asset.py",
+      "metadata": {
+        "category": "autodesk",
+        "group": "assets",
+        "description": "Griptape Node that updates asset information in ShotGrid.",
+        "display_name": "Update Asset"
+      }
+    }
+  ]
+}
