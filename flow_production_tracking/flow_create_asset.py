@@ -524,11 +524,15 @@ class FlowCreateAsset(BaseShotGridNode):
                     "task_template_id", choices, choices[0] if choices else "No task templates available"
                 )
 
-                # Update the UI options with the data
+                # Update the UI options with the data AFTER updating choices
                 task_template_param = self.get_parameter_by_name("task_template_id")
                 if task_template_param:
+                    # Ensure ui_options exists and add our data
+                    if not hasattr(task_template_param, "ui_options") or task_template_param.ui_options is None:
+                        task_template_param.ui_options = {}
                     task_template_param.ui_options["data"] = choices_data
-                    logger.info(f"{self.name}: Updated UI options with {len(choices_data)} template data items")
+                else:
+                    logger.warning(f"{self.name}: Could not find task_template_id parameter")
                 logger.info(f"{self.name}: Populated {len(choices)} task template choices for Asset entity type")
             else:
                 self._update_option_choices(
@@ -601,10 +605,16 @@ class FlowCreateAsset(BaseShotGridNode):
                     "task_template_id", choices, choices[0] if choices else "No task templates available"
                 )
 
-                # Update the UI options with the data
+                # Update the UI options with the data AFTER updating choices
                 task_template_param = self.get_parameter_by_name("task_template_id")
                 if task_template_param:
+                    # Ensure ui_options exists and add our data
+                    if not hasattr(task_template_param, "ui_options") or task_template_param.ui_options is None:
+                        task_template_param.ui_options = {}
                     task_template_param.ui_options["data"] = choices_data
+
+                else:
+                    logger.warning(f"{self.name}: Could not find task_template_id parameter")
                 logger.info(
                     f"{self.name}: Populated {len(choices)} task template choices for asset type '{asset_type}' in project {project_id}"
                 )
@@ -781,31 +791,34 @@ class FlowCreateAsset(BaseShotGridNode):
 
             # Create the asset (with or without task template)
             if use_template:
-                logger.info(f"{self.name}: Creating asset using task template")
-
                 # Determine which task template to use
                 if task_template_id and task_template_id != "No task templates available":
                     # Extract task template ID from the selected choice
                     try:
-                        # Get the task template ID directly from the UI options data
-                        task_template_param = self.get_parameter_by_name("task_template_id")
-                        if task_template_param and "data" in task_template_param.ui_options:
-                            choices_data = task_template_param.ui_options["data"]
-                            for choice_data in choices_data:
-                                if choice_data["name"] == task_template_id:
-                                    template_to_use = choice_data["args"]["template_id"]
-                                    logger.info(
-                                        f"{self.name}: Using selected task template '{task_template_id}' with ID: {template_to_use}"
-                                    )
-                                    break
-                            else:
-                                logger.warning(
-                                    f"{self.name}: Could not find task template ID for selection: {task_template_id}"
-                                )
-                                template_to_use = None
-                        else:
-                            logger.warning(f"{self.name}: No task template data found in UI options")
-                            template_to_use = None
+                        # Since ui_options["data"] is being overwritten, let's fetch the task templates again
+                        # and find the one that matches the selected name
+
+                        # Get access token and fetch task templates
+                        access_token = self._get_access_token()
+                        base_url = self._get_shotgrid_config()["base_url"]
+                        api = create_shotgrid_api(access_token, base_url)
+                        task_templates = api.get_task_templates(entity_type="Asset", asset_type=asset_type)
+
+                        template_to_use = None
+                        for template in task_templates:
+                            template_id = template.get("id")
+                            template_name = template.get("attributes", {}).get("name", "")
+                            template_code = template.get("attributes", {}).get("code", "")
+
+                            # Check if this template matches the selected one
+                            if template_code == task_template_id or template_name == task_template_id:
+                                template_to_use = template_id
+                                break
+
+                        if template_to_use is None:
+                            logger.warning(
+                                f"{self.name}: Could not find task template ID for selection: {task_template_id}"
+                            )
 
                     except Exception as e:
                         logger.warning(f"{self.name}: Error parsing task template selection: {e}")
@@ -814,7 +827,7 @@ class FlowCreateAsset(BaseShotGridNode):
                     logger.warning(f"{self.name}: No task template selected, creating asset without task template")
                     template_to_use = None
 
-                # Create the asset first (without task template)
+                # Create the asset with task template attached (if selected)
                 asset_data = {
                     "code": asset_code,
                     "sg_asset_type": asset_type,
@@ -823,14 +836,16 @@ class FlowCreateAsset(BaseShotGridNode):
                 if asset_description:
                     asset_data["description"] = asset_description
 
+                # Attach task template if selected
+                if template_to_use:
+                    asset_data["task_template"] = {"type": "TaskTemplate", "id": template_to_use}
+
                 url = f"{base_url}api/v1/entity/assets"
                 headers = {
                     "Authorization": f"Bearer {access_token}",
                     "Content-Type": "application/json",
                     "Accept": "application/json",
                 }
-
-                logger.info(f"{self.name}: Creating asset with data: {asset_data}")
 
                 with httpx.Client() as client:
                     response = client.post(url, headers=headers, json=asset_data)
@@ -841,15 +856,6 @@ class FlowCreateAsset(BaseShotGridNode):
                     asset_id = created_asset.get("id")
                     logger.info(f"{self.name}: Asset created successfully with ID: {asset_id}")
 
-                # Apply task template if selected
-                if template_to_use and asset_id:
-                    logger.info(f"{self.name}: Applying task template {template_to_use} to asset {asset_id}")
-                    try:
-                        # Create tasks based on the task template
-                        self._create_tasks_from_template(asset_id, template_to_use, access_token, base_url)
-                        logger.info(f"{self.name}: Successfully applied task template to asset")
-                    except Exception as e:
-                        logger.warning(f"{self.name}: Failed to apply task template: {e}")
             else:
                 # Create asset without template
                 asset_data = {
@@ -866,8 +872,6 @@ class FlowCreateAsset(BaseShotGridNode):
                     "Content-Type": "application/json",
                     "Accept": "application/json",
                 }
-
-                logger.info(f"{self.name}: Creating asset without template with data: {asset_data}")
 
                 with httpx.Client() as client:
                     response = client.post(url, headers=headers, json=asset_data)
@@ -987,17 +991,20 @@ class FlowCreateAsset(BaseShotGridNode):
 
                 # Get the step information from the template
                 step_data = template_attributes.get("step")
-                if not step_data:
-                    logger.warning(f"{self.name}: No step data found in task template")
-                    return
 
                 # Create a task based on the template
                 task_data = {
                     "content": template_attributes.get("name", "Task from Template"),
                     "project": {"type": "Project", "id": int(self.get_parameter_value("project_id"))},
                     "entity": {"type": "Asset", "id": asset_id},
-                    "step": step_data,
                 }
+
+                # Add step data if available
+                if step_data:
+                    task_data["step"] = step_data
+                    logger.info(f"{self.name}: Using step data from template: {step_data}")
+                else:
+                    logger.info(f"{self.name}: No step data in template, creating task without step")
 
                 # Add description if available
                 if template_attributes.get("description"):
