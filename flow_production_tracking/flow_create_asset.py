@@ -3,85 +3,128 @@ from typing import Any
 
 import httpx
 from base_shotgrid_node import BaseShotGridNode
+from flow_utils import create_shotgrid_api
 from image_utils import convert_image_for_shotgrid, get_mime_type, should_convert_image
 
-from griptape_nodes.exe_types.core_types import Parameter, ParameterMode
+from griptape_nodes.exe_types.core_types import Parameter, ParameterGroup, ParameterMessage, ParameterMode
 from griptape_nodes.retained_mode.griptape_nodes import logger
 from griptape_nodes.traits.options import Options
 
 
 class FlowCreateAsset(BaseShotGridNode):
-    def __init__(self, **kwargs):
+    def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
-        self.add_parameter(
-            Parameter(
-                name="project_id",
-                type="string",
-                default_value=None,
-                tooltip="The ID of the project to create the asset in.",
-            )
+
+        # Dynamic message that will be updated with the created asset link - placed at top for prominence
+        self.asset_message = ParameterMessage(
+            name="asset_message",
+            title="Asset Management",
+            value="Create an asset to see the link to view it in ShotGrid. Click the button to view all assets.",
+            button_link="",
+            button_text="View All Assets",
+            variant="info",
+            full_width=True,
         )
-        self.add_parameter(
-            Parameter(
-                name="asset_code",
-                type="string",
-                default_value=None,
-                tooltip="The code for the asset to create.",
+        self.add_node_element(self.asset_message)
+
+        # Set the initial link to the main assets page
+        self._update_asset_message_initial()
+
+        with ParameterGroup(name="asset_input") as asset_input:
+            self.add_parameter(
+                Parameter(
+                    name="project_id",
+                    type="string",
+                    default_value=None,
+                    tooltip="The ID of the project to create the asset in.",
+                )
             )
-        )
-        self.add_parameter(
-            Parameter(
-                name="asset_type",
-                type="string",
-                default_value="Character",
-                tooltip="The type of asset to create (e.g., Character, Prop, Environment).",
-                traits={
-                    Options(choices=["Character", "Prop", "Environment", "Vehicle", "FX", "Camera", "Light", "Audio"])
-                },
+            self.add_parameter(
+                Parameter(
+                    name="asset_code",
+                    type="string",
+                    default_value=None,
+                    tooltip="The code for the asset to create.",
+                )
             )
-        )
-        self.add_parameter(
-            Parameter(
-                name="asset_description",
-                type="string",
-                default_value=None,
-                tooltip="The description for the asset to create.",
+            self.add_parameter(
+                Parameter(
+                    name="asset_type",
+                    type="string",
+                    default_value="Character",
+                    tooltip="The type of asset to create (e.g., Character, Prop, Environment).",
+                    traits={
+                        Options(
+                            choices=["Character", "Prop", "Environment", "Vehicle", "FX", "Camera", "Light", "Audio"]
+                        )
+                    },
+                )
             )
-        )
-        self.add_parameter(
-            Parameter(
-                name="thumbnail_image",
-                type="ImageUrlArtifact",
-                default_value=None,
-                tooltip="The thumbnail image for the asset (optional).",
-                ui_options={
-                    "clickable_file_browser": True,
-                    "expander": True,
-                },
+            self.add_parameter(
+                Parameter(
+                    name="asset_description",
+                    type="string",
+                    default_value=None,
+                    tooltip="The description for the asset to create.",
+                )
             )
-        )
-        self.add_parameter(
-            Parameter(
-                name="created_asset",
-                output_type="json",
-                type="json",
-                default_value=None,
-                tooltip="The created asset data.",
-                allowed_modes={ParameterMode.OUTPUT},
-                ui_options={"hide_property": True},
+            self.add_parameter(
+                Parameter(
+                    name="use_template",
+                    type="boolean",
+                    default_value=True,
+                    tooltip="Whether to use a template for asset creation. Templates provide predefined structure and tasks.",
+                )
             )
-        )
-        self.add_parameter(
-            Parameter(
-                name="asset_id",
-                output_type="string",
-                type="string",
-                default_value=None,
-                tooltip="The ID of the newly created asset.",
-                allowed_modes={ParameterMode.OUTPUT},
-                ui_options={"hide_property": True},
+            self.add_parameter(
+                Parameter(
+                    name="task_template_id",
+                    type="string",
+                    default_value=None,
+                    tooltip="The task template to apply to the asset. This will create the appropriate workflow structure.",
+                    traits={Options(choices=["No task templates available"])},
+                )
             )
-        )
+
+            self.add_parameter(
+                Parameter(
+                    name="thumbnail_image",
+                    type="ImageUrlArtifact",
+                    default_value=None,
+                    tooltip="The thumbnail image for the asset (optional).",
+                    ui_options={
+                        "clickable_file_browser": True,
+                        "expander": True,
+                    },
+                )
+            )
+            self.add_parameter(
+                Parameter(
+                    name="created_asset",
+                    output_type="json",
+                    type="json",
+                    default_value=None,
+                    tooltip="The created asset data.",
+                    allowed_modes={ParameterMode.OUTPUT},
+                    ui_options={"hide_property": True},
+                )
+            )
+            self.add_parameter(
+                Parameter(
+                    name="asset_id",
+                    output_type="string",
+                    type="string",
+                    default_value=None,
+                    tooltip="The ID of the newly created asset.",
+                    allowed_modes={ParameterMode.OUTPUT},
+                    ui_options={"hide_property": True},
+                )
+            )
+
+        self.add_node_element(asset_input)
+
+        # Populate task template choices after all parameters are added
+        self._populate_task_template_choices()
 
     def after_value_set(self, parameter: Parameter, value: Any) -> None:
         if parameter.name == "project_id" and value:
@@ -91,56 +134,39 @@ class FlowCreateAsset(BaseShotGridNode):
                 access_token = self._get_access_token()
                 base_url = self._get_shotgrid_config()["base_url"]
 
-                # Make request to get asset types for the project
-                headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
-                url = f"{base_url}api/v1/schema/Asset"
-                params = {"project_id": int(value)}
+                # Use utility function to get asset types for the project
+                api = create_shotgrid_api(access_token, base_url)
+                asset_types = api.get_asset_types_for_project(int(value))
 
-                logger.info(f"{self.name}: Getting asset types for project {value}")
-
-                with httpx.Client() as client:
-                    response = client.get(url, headers=headers, params=params)
-                    response.raise_for_status()
-
-                    data = response.json()
-                    asset_schema = data.get("data", {})
-
-                    # Extract asset types from the schema
-                    asset_types = []
-
-                    # Look for asset type fields in the schema
-                    if "properties" in asset_schema:
-                        properties = asset_schema["properties"]
-
-                        # Check for sg_asset_type field which typically contains asset types
-                        if "sg_asset_type" in properties:
-                            sg_asset_type_field = properties["sg_asset_type"]
-                            if (
-                                "properties" in sg_asset_type_field
-                                and "properties" in sg_asset_type_field["properties"]
-                            ):
-                                # This might contain the allowed values
-                                allowed_values = sg_asset_type_field.get("properties", {}).get("properties", {})
-                                for value_key, value_info in allowed_values.items():
-                                    asset_types.append(value_key)
-
-                    # If we didn't find asset types in the schema, provide common defaults
-                    if not asset_types:
-                        logger.info(f"{self.name}: No specific asset types found, using common defaults")
-                        asset_types = ["Character", "Prop", "Environment", "Vehicle", "FX", "Camera", "Light", "Audio"]
-
-                    # Update the asset_type parameter with the new choices
-                    if asset_types:
-                        self._update_option_choices("asset_type", asset_types, asset_types[0])
-                        logger.info(f"{self.name}: Updated asset_type choices: {asset_types}")
-                    else:
-                        self._update_option_choices(
-                            "asset_type", ["No asset types available"], "No asset types available"
-                        )
+                # Update the asset_type parameter with the new choices
+                if asset_types:
+                    self._update_option_choices("asset_type", asset_types, asset_types[0])
+                    logger.info(f"{self.name}: Updated asset_type choices: {asset_types}")
+                else:
+                    self._update_option_choices("asset_type", ["No asset types available"], "No asset types available")
 
             except Exception as e:
                 logger.warning(f"{self.name}: Could not get asset types for project {value}: {e}")
-                self._update_option_choices("asset_type", ["No asset types available"], "No asset types available")
+                # Fallback to common asset types
+                fallback_types = ["Character", "Prop", "Environment", "Vehicle", "FX", "Camera", "Light", "Audio"]
+                self._update_option_choices("asset_type", fallback_types, fallback_types[0])
+
+        elif parameter.name == "asset_type" and value:
+            # When asset_type changes, update task template choices for that specific type
+            logger.info(f"{self.name}: Asset type changed to: {value}")
+
+            # Only repopulate if we don't have templates for this asset type yet
+            current_asset_type = getattr(self, "current_asset_type", None)
+            if current_asset_type != value:
+                self.current_asset_type = value
+                project_id = self.get_parameter_value("project_id")
+                if project_id:
+                    self._populate_task_template_choices_for_asset_type(project_id, value)
+                else:
+                    # If no project_id is set, populate with all task templates for Asset entity type
+                    self._populate_task_template_choices()
+            else:
+                logger.info(f"{self.name}: Asset type {value} already has templates populated, skipping")
 
         return super().after_value_set(parameter, value)
 
@@ -406,6 +432,196 @@ class FlowCreateAsset(BaseShotGridNode):
             logger.error(f"{self.name}: Failed to update asset thumbnail: {e}")
             raise
 
+    def _update_asset_message(self, asset_id: int, asset_code: str) -> None:
+        """Update the ParameterMessage with a link to the created asset in ShotGrid."""
+        try:
+            # Get the base URL from config
+            base_url = self._get_shotgrid_config()["base_url"]
+
+            # Create the ShotGrid URL for the asset
+            shotgrid_url = f"{base_url}detail/Asset/{asset_id}"
+
+            # Update the ParameterMessage
+            message_param = self.get_element_by_name_and_type("asset_message", ParameterMessage)
+            message_param.button_text = f"View Asset: {asset_code}"
+            message_param.button_link = shotgrid_url
+            message_param.value = (
+                f"Asset '{asset_code}' (ID: {asset_id}) created successfully! Click the button to view it in ShotGrid."
+            )
+
+            logger.info(f"{self.name}: Updated asset message with link: {shotgrid_url}")
+
+        except Exception as e:
+            logger.warning(f"{self.name}: Failed to update asset message: {e}")
+
+    def _update_asset_message_initial(self) -> None:
+        """Update the ParameterMessage to show a link to the main assets page."""
+        try:
+            base_url = self._get_shotgrid_config()["base_url"]
+            message_param = self.get_element_by_name_and_type("asset_message", ParameterMessage)
+            message_param.button_text = "View All Assets"
+            message_param.button_link = f"{base_url}assets"
+            message_param.value = (
+                "Create an asset to see the link to view it in ShotGrid. Click the button to view all assets."
+            )
+            logger.info(f"{self.name}: Updated asset message to show main assets page link.")
+        except Exception as e:
+            logger.warning(f"{self.name}: Failed to update asset message to show main assets page: {e}")
+
+    def _populate_task_template_choices(self) -> None:
+        """Populate the task_template_id parameter with available task templates for Asset entity type"""
+        logger.info(f"{self.name}: _populate_task_template_choices called")
+        self.populating_templates = True
+        try:
+            # Get access token
+            access_token = self._get_access_token()
+            base_url = self._get_shotgrid_config()["base_url"]
+
+            # Use utility function to get task templates
+            api = create_shotgrid_api(access_token, base_url)
+            task_templates = api.get_task_templates(entity_type="Asset")
+
+            if task_templates:
+                # Create choices list with data for UI display
+                choices = []
+                choices_data = []
+
+                for template in task_templates:
+                    template_id = template.get("id")
+                    template_name = template.get("attributes", {}).get("name", "")
+                    template_code = template.get("attributes", {}).get("code", "")
+                    template_description = template.get("attributes", {}).get("description", "")
+
+                    # Use the template code for the choice (more descriptive than name)
+                    # Fallback to name if code is empty, then to description, then to ID
+                    if template_code:
+                        choice_text = template_code
+                    elif template_name:
+                        choice_text = template_name
+                    elif template_description:
+                        choice_text = template_description
+                    else:
+                        choice_text = f"Task Template {template_id}"
+
+                    choices.append(choice_text)
+
+                    # Store the template data in the proper UI options format
+                    choice_data = {
+                        "name": choice_text,  # Main display text
+                        "subtitle": template_description if template_description else template_name,  # Secondary text
+                        "args": {
+                            "template_id": template_id,
+                            "template_name": template_name,
+                            "template_code": template_code,
+                            "template_description": template_description,
+                        },
+                    }
+                    choices_data.append(choice_data)
+
+                # Update the task_template_id parameter with the new choices
+                logger.info(f"{self.name}: Updating task template choices: {choices}")
+                self._update_option_choices(
+                    "task_template_id", choices, choices[0] if choices else "No task templates available"
+                )
+
+                # Update the UI options with the data
+                task_template_param = self.get_parameter_by_name("task_template_id")
+                if task_template_param:
+                    task_template_param.ui_options["data"] = choices_data
+                    logger.info(f"{self.name}: Updated UI options with {len(choices_data)} template data items")
+                logger.info(f"{self.name}: Populated {len(choices)} task template choices for Asset entity type")
+            else:
+                self._update_option_choices(
+                    "task_template_id", ["No task templates available"], "No task templates available"
+                )
+                logger.info(f"{self.name}: No task templates found for Asset entity type")
+
+        except Exception as e:
+            logger.warning(f"{self.name}: Could not populate task template choices: {e}")
+            self._update_option_choices(
+                "task_template_id", ["No task templates available"], "No task templates available"
+            )
+        finally:
+            self.populating_templates = False
+
+    def _populate_task_template_choices_for_asset_type(self, project_id: int, asset_type: str) -> None:
+        """Populate the task_template_id parameter with task templates for Asset entity type, filtered by asset type"""
+        logger.info(
+            f"{self.name}: _populate_task_template_choices_for_asset_type called for project {project_id}, asset_type {asset_type}"
+        )
+        self.populating_templates = True
+        try:
+            # Get access token
+            access_token = self._get_access_token()
+            base_url = self._get_shotgrid_config()["base_url"]
+
+            # Use utility function to get task templates filtered by asset type
+            api = create_shotgrid_api(access_token, base_url)
+            task_templates = api.get_task_templates(entity_type="Asset", asset_type=asset_type)
+
+            if task_templates:
+                # Create choices list with data for UI display
+                choices = []
+                choices_data = []
+
+                for template in task_templates:
+                    template_id = template.get("id")
+                    template_name = template.get("attributes", {}).get("name", "")
+                    template_code = template.get("attributes", {}).get("code", "")
+                    template_description = template.get("attributes", {}).get("description", "")
+
+                    # Use the template code for the choice (more descriptive than name)
+                    # Fallback to name if code is empty, then to description, then to ID
+                    if template_code:
+                        choice_text = template_code
+                    elif template_name:
+                        choice_text = template_name
+                    elif template_description:
+                        choice_text = template_description
+                    else:
+                        choice_text = f"Task Template {template_id}"
+
+                    choices.append(choice_text)
+
+                    # Store the template data in the proper UI options format
+                    choice_data = {
+                        "name": choice_text,  # Main display text
+                        "subtitle": template_description if template_description else template_name,  # Secondary text
+                        "args": {
+                            "template_id": template_id,
+                            "template_name": template_name,
+                            "template_code": template_code,
+                            "template_description": template_description,
+                        },
+                    }
+                    choices_data.append(choice_data)
+
+                # Update the task_template_id parameter with the filtered choices
+                self._update_option_choices(
+                    "task_template_id", choices, choices[0] if choices else "No task templates available"
+                )
+
+                # Update the UI options with the data
+                task_template_param = self.get_parameter_by_name("task_template_id")
+                if task_template_param:
+                    task_template_param.ui_options["data"] = choices_data
+                logger.info(
+                    f"{self.name}: Populated {len(choices)} task template choices for asset type '{asset_type}' in project {project_id}"
+                )
+            else:
+                self._update_option_choices(
+                    "task_template_id", ["No task templates available"], "No task templates available"
+                )
+                logger.info(f"{self.name}: No task templates found for Asset entity type")
+
+        except Exception as e:
+            logger.warning(f"{self.name}: Could not populate task template choices for asset type '{asset_type}': {e}")
+            self._update_option_choices(
+                "task_template_id", ["No task templates available"], "No task templates available"
+            )
+        finally:
+            self.populating_templates = False
+
     def _try_direct_field_update(self, asset_id: int, thumbnail_url: str, access_token: str, base_url: str) -> str:
         """Try updating the asset's image field directly"""
         try:
@@ -449,6 +665,84 @@ class FlowCreateAsset(BaseShotGridNode):
             logger.warning(f"{self.name}: Could not check asset image field: {e}")
             return "check_failed"
 
+    def _create_asset_from_template(
+        self,
+        template_id: int,
+        asset_code: str,
+        project_id: int,
+        asset_description: str,
+        access_token: str,
+        base_url: str,
+    ) -> dict:
+        """Create an asset using a template"""
+        try:
+            # First, get the template data
+            template_url = f"{base_url}api/v1/entity/assets/{template_id}"
+            headers = {
+                "Authorization": f"Bearer {access_token}",
+                "Accept": "application/json",
+            }
+
+            logger.info(f"{self.name}: Getting template data for template {template_id}")
+
+            with httpx.Client() as client:
+                response = client.get(template_url, headers=headers)
+                response.raise_for_status()
+
+                template_data = response.json()
+                template_attributes = template_data.get("data", {}).get("attributes", {})
+
+                logger.info(f"{self.name}: Template attributes: {template_attributes}")
+
+                # Create asset data based on template
+                asset_data = {
+                    "code": asset_code,
+                    "project": {"type": "Project", "id": int(project_id)},
+                    "sg_asset_type": template_attributes.get("sg_asset_type"),
+                    "template": False,  # Ensure the new asset is not a template
+                }
+
+                # Copy relevant fields from template (only safe fields that we know work)
+                safe_fields = ["description", "sg_asset_type"]
+
+                for field in safe_fields:
+                    if template_attributes.get(field) is not None:
+                        asset_data[field] = template_attributes.get(field)
+
+                # Override description if provided
+                if asset_description:
+                    asset_data["description"] = asset_description
+
+                logger.info(f"{self.name}: Creating asset from template with data: {asset_data}")
+
+                # Create the asset
+                create_url = f"{base_url}api/v1/entity/assets"
+                create_headers = {
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                }
+
+                create_response = client.post(create_url, headers=create_headers, json=asset_data)
+
+                # Log detailed error information if creation fails
+                if create_response.status_code != 201:
+                    logger.error(f"{self.name}: Asset creation failed with status {create_response.status_code}")
+                    try:
+                        error_data = create_response.json()
+                        logger.error(f"{self.name}: Error response: {error_data}")
+                    except:
+                        logger.error(f"{self.name}: Error response text: {create_response.text}")
+                    create_response.raise_for_status()
+
+                created_data = create_response.json()
+                logger.info(f"{self.name}: Asset created from template successfully")
+                return created_data
+
+        except Exception as e:
+            logger.error(f"{self.name}: Failed to create asset from template: {e}")
+            raise
+
     def process(self) -> None:
         try:
             # Get input parameters
@@ -456,6 +750,9 @@ class FlowCreateAsset(BaseShotGridNode):
             asset_code = self.get_parameter_value("asset_code")
             asset_type = self.get_parameter_value("asset_type")
             asset_description = self.get_parameter_value("asset_description")
+            use_template = self.get_parameter_value("use_template")
+            task_template_id = self.get_parameter_value("task_template_id")
+
             thumbnail_image = self.get_parameter_value("thumbnail_image")
 
             if not project_id:
@@ -474,16 +771,6 @@ class FlowCreateAsset(BaseShotGridNode):
             access_token = self._get_access_token()
             base_url = self._get_shotgrid_config()["base_url"]
 
-            # Prepare asset data
-            asset_data = {
-                "code": asset_code,
-                "sg_asset_type": asset_type,
-                "project": {"type": "Project", "id": int(project_id)},
-            }
-
-            if asset_description:
-                asset_data["description"] = asset_description
-
             # Try password authentication first for better permissions
             try:
                 access_token = self._get_access_token_with_password()
@@ -492,34 +779,107 @@ class FlowCreateAsset(BaseShotGridNode):
                 logger.warning(f"{self.name}: Password authentication failed, falling back to client credentials: {e}")
                 access_token = self._get_access_token()
 
-            # Create the asset
-            url = f"{self._get_shotgrid_config()['base_url']}api/v1/entity/assets"
-            headers = {
-                "Authorization": f"Bearer {access_token}",
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-            }
+            # Create the asset (with or without task template)
+            if use_template:
+                logger.info(f"{self.name}: Creating asset using task template")
 
-            logger.info(f"{self.name}: Creating asset with data: {asset_data}")
+                # Determine which task template to use
+                if task_template_id and task_template_id != "No task templates available":
+                    # Extract task template ID from the selected choice
+                    try:
+                        # Get the task template ID directly from the UI options data
+                        task_template_param = self.get_parameter_by_name("task_template_id")
+                        if task_template_param and "data" in task_template_param.ui_options:
+                            choices_data = task_template_param.ui_options["data"]
+                            for choice_data in choices_data:
+                                if choice_data["name"] == task_template_id:
+                                    template_to_use = choice_data["args"]["template_id"]
+                                    logger.info(
+                                        f"{self.name}: Using selected task template '{task_template_id}' with ID: {template_to_use}"
+                                    )
+                                    break
+                            else:
+                                logger.warning(
+                                    f"{self.name}: Could not find task template ID for selection: {task_template_id}"
+                                )
+                                template_to_use = None
+                        else:
+                            logger.warning(f"{self.name}: No task template data found in UI options")
+                            template_to_use = None
 
-            with httpx.Client() as client:
-                response = client.post(url, headers=headers, json=asset_data)
+                    except Exception as e:
+                        logger.warning(f"{self.name}: Error parsing task template selection: {e}")
+                        template_to_use = None
+                else:
+                    logger.warning(f"{self.name}: No task template selected, creating asset without task template")
+                    template_to_use = None
 
-                # Log the response for debugging
-                logger.info(f"{self.name}: Create response status: {response.status_code}")
-                try:
-                    error_data = response.json()
-                    logger.info(f"{self.name}: Create response: {error_data}")
-                except:
-                    logger.info(f"{self.name}: Create response text: {response.text}")
+                # Create the asset first (without task template)
+                asset_data = {
+                    "code": asset_code,
+                    "sg_asset_type": asset_type,
+                    "project": {"type": "Project", "id": int(project_id)},
+                }
+                if asset_description:
+                    asset_data["description"] = asset_description
 
-                response.raise_for_status()
+                url = f"{base_url}api/v1/entity/assets"
+                headers = {
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                }
 
-                data = response.json()
-                created_asset = data.get("data", {})
-                asset_id = created_asset.get("id")
+                logger.info(f"{self.name}: Creating asset with data: {asset_data}")
 
-                logger.info(f"{self.name}: Asset created successfully with ID: {asset_id}")
+                with httpx.Client() as client:
+                    response = client.post(url, headers=headers, json=asset_data)
+                    response.raise_for_status()
+
+                    data = response.json()
+                    created_asset = data.get("data", {})
+                    asset_id = created_asset.get("id")
+                    logger.info(f"{self.name}: Asset created successfully with ID: {asset_id}")
+
+                # Apply task template if selected
+                if template_to_use and asset_id:
+                    logger.info(f"{self.name}: Applying task template {template_to_use} to asset {asset_id}")
+                    try:
+                        # Create tasks based on the task template
+                        self._create_tasks_from_template(asset_id, template_to_use, access_token, base_url)
+                        logger.info(f"{self.name}: Successfully applied task template to asset")
+                    except Exception as e:
+                        logger.warning(f"{self.name}: Failed to apply task template: {e}")
+            else:
+                # Create asset without template
+                asset_data = {
+                    "code": asset_code,
+                    "sg_asset_type": asset_type,
+                    "project": {"type": "Project", "id": int(project_id)},
+                }
+                if asset_description:
+                    asset_data["description"] = asset_description
+
+                url = f"{base_url}api/v1/entity/assets"
+                headers = {
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                }
+
+                logger.info(f"{self.name}: Creating asset without template with data: {asset_data}")
+
+                with httpx.Client() as client:
+                    response = client.post(url, headers=headers, json=asset_data)
+                    response.raise_for_status()
+
+                    data = response.json()
+                    created_asset = data.get("data", {})
+                    asset_id = created_asset.get("id")
+                    logger.info(f"{self.name}: Asset created successfully with ID: {asset_id}")
+
+            # Update the ParameterMessage with a link to the created asset
+            self._update_asset_message(asset_id, asset_code)
 
             # Upload thumbnail if provided
             if thumbnail_image and asset_id:
@@ -601,3 +961,72 @@ class FlowCreateAsset(BaseShotGridNode):
 
         except Exception as e:
             logger.error(f"{self.name} encountered an error: {e!s}")
+
+    def _create_tasks_from_template(
+        self, asset_id: int, task_template_id: int, access_token: str, base_url: str
+    ) -> None:
+        """Create tasks for an asset based on a task template"""
+        try:
+            # First, get the task template data
+            template_url = f"{base_url}api/v1/entity/task_templates/{task_template_id}"
+            headers = {
+                "Authorization": f"Bearer {access_token}",
+                "Accept": "application/json",
+            }
+
+            logger.info(f"{self.name}: Getting task template data for template {task_template_id}")
+
+            with httpx.Client() as client:
+                response = client.get(template_url, headers=headers)
+                response.raise_for_status()
+
+                template_data = response.json()
+                template_attributes = template_data.get("data", {}).get("attributes", {})
+
+                logger.info(f"{self.name}: Task template attributes: {template_attributes}")
+
+                # Get the step information from the template
+                step_data = template_attributes.get("step")
+                if not step_data:
+                    logger.warning(f"{self.name}: No step data found in task template")
+                    return
+
+                # Create a task based on the template
+                task_data = {
+                    "content": template_attributes.get("name", "Task from Template"),
+                    "project": {"type": "Project", "id": int(self.get_parameter_value("project_id"))},
+                    "entity": {"type": "Asset", "id": asset_id},
+                    "step": step_data,
+                }
+
+                # Add description if available
+                if template_attributes.get("description"):
+                    task_data["description"] = template_attributes.get("description")
+
+                logger.info(f"{self.name}: Creating task from template with data: {task_data}")
+
+                # Create the task
+                create_url = f"{base_url}api/v1/entity/tasks"
+                create_headers = {
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                }
+
+                create_response = client.post(create_url, headers=create_headers, json=task_data)
+
+                if create_response.status_code == 201:
+                    created_task = create_response.json()
+                    task_id = created_task.get("data", {}).get("id")
+                    logger.info(f"{self.name}: Successfully created task {task_id} from template")
+                else:
+                    logger.warning(f"{self.name}: Failed to create task from template: {create_response.status_code}")
+                    try:
+                        error_data = create_response.json()
+                        logger.warning(f"{self.name}: Error response: {error_data}")
+                    except:
+                        logger.warning(f"{self.name}: Error response text: {create_response.text}")
+
+        except Exception as e:
+            logger.error(f"{self.name}: Failed to create tasks from template: {e}")
+            raise

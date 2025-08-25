@@ -1,72 +1,90 @@
 import urllib.parse
+from typing import Any
 
 import httpx
 from base_shotgrid_node import BaseShotGridNode
 from image_utils import convert_image_for_shotgrid, get_mime_type, should_convert_image
 
-from griptape_nodes.exe_types.core_types import Parameter, ParameterMode
+from griptape_nodes.exe_types.core_types import Parameter, ParameterGroup, ParameterMessage, ParameterMode
 from griptape_nodes.retained_mode.griptape_nodes import logger
 
 
 class FlowUpdateProject(BaseShotGridNode):
-    def __init__(self, **kwargs):
+    def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
-        self.add_parameter(
-            Parameter(
-                name="project_id",
-                output_type="string",
-                type="string",
-                default_value=None,
-                tooltip="The ID of the project to update.",
-            )
+
+        # Dynamic message that will be updated with the updated project link - placed at top for prominence
+        self.project_message = ParameterMessage(
+            name="project_message",
+            title="Project Management",
+            value="Update a project to see the link to view it in ShotGrid. Click the button to view all projects.",
+            button_link="https://griptape-ai.shotgrid.autodesk.com/projects",
+            button_text="View All Projects",
+            variant="info",
+            full_width=True,
         )
-        self.add_parameter(
-            Parameter(
-                name="project_name",
-                type="string",
-                default_value=None,
-                tooltip="The new name for the project (optional).",
+        self.add_node_element(self.project_message)
+
+        # Set the initial link to the main projects page
+        self._update_project_message_initial()
+
+        with ParameterGroup(name="project_input") as project_input:
+            self.add_parameter(
+                Parameter(
+                    name="project_id",
+                    output_type="string",
+                    type="string",
+                    default_value=None,
+                    tooltip="The ID of the project to update.",
+                )
             )
-        )
-        self.add_parameter(
-            Parameter(
-                name="project_code",
-                type="string",
-                default_value=None,
-                tooltip="The new code for the project (optional).",
+            self.add_parameter(
+                Parameter(
+                    name="project_name",
+                    type="string",
+                    default_value=None,
+                    tooltip="The new name for the project (optional).",
+                )
             )
-        )
-        self.add_parameter(
-            Parameter(
-                name="project_description",
-                type="string",
-                default_value=None,
-                tooltip="The new description for the project (optional).",
+            self.add_parameter(
+                Parameter(
+                    name="project_code",
+                    type="string",
+                    default_value=None,
+                    tooltip="The new code for the project (optional).",
+                )
             )
-        )
-        self.add_parameter(
-            Parameter(
-                name="thumbnail_image",
-                type="ImageUrlArtifact",
-                default_value=None,
-                tooltip="The new thumbnail image for the project (optional).",
-                ui_options={
-                    "clickable_file_browser": True,
-                    "expander": True,
-                },
+            self.add_parameter(
+                Parameter(
+                    name="project_description",
+                    type="string",
+                    default_value=None,
+                    tooltip="The new description for the project (optional).",
+                )
             )
-        )
-        self.add_parameter(
-            Parameter(
-                name="updated_project",
-                output_type="json",
-                type="json",
-                default_value=None,
-                tooltip="The updated project data.",
-                allowed_modes={ParameterMode.OUTPUT},
-                ui_options={"hide_property": True},
+            self.add_parameter(
+                Parameter(
+                    name="thumbnail_image",
+                    type="ImageUrlArtifact",
+                    default_value=None,
+                    tooltip="The new thumbnail image for the project (optional).",
+                    ui_options={
+                        "clickable_file_browser": True,
+                        "expander": True,
+                    },
+                )
             )
-        )
+            self.add_parameter(
+                Parameter(
+                    name="updated_project",
+                    output_type="json",
+                    type="json",
+                    default_value=None,
+                    tooltip="The updated project data.",
+                    allowed_modes={ParameterMode.OUTPUT},
+                    ui_options={"hide_property": True},
+                )
+            )
 
     def _download_image_from_url(self, image_url: str) -> bytes:
         """Download image from URL and return as bytes"""
@@ -303,6 +321,79 @@ class FlowUpdateProject(BaseShotGridNode):
             logger.error(f"{self.name}: Failed to update project thumbnail: {e}")
             raise
 
+    def _update_project_message(self, project_id: int, project_name: str) -> None:
+        """Update the ParameterMessage with a link to the updated project."""
+        try:
+            # Construct the URL for the updated project
+            base_url = self._get_shotgrid_config()["base_url"]
+            project_url = f"{base_url}#!/project/{project_id}"
+
+            # Update the button_link and value of the ParameterMessage
+            self.project_message.button_link = project_url
+            self.project_message.value = (
+                f"Project '{project_name}' updated successfully! Click the button to view it in ShotGrid."
+            )
+            logger.info(f"{self.name}: ParameterMessage updated with project link: {project_url}")
+        except Exception as e:
+            logger.error(f"{self.name}: Failed to update ParameterMessage with project link: {e}")
+
+    def _update_project_message_initial(self) -> None:
+        """Set the initial value of the ParameterMessage to the main projects page."""
+        try:
+            base_url = self._get_shotgrid_config()["base_url"]
+            self.project_message.value = (
+                "Update a project to see the link to view it in ShotGrid. Click the button to view all projects."
+            )
+            self.project_message.button_link = f"{base_url}#!/projects"
+            logger.info(f"{self.name}: ParameterMessage initialized with main projects link.")
+        except Exception as e:
+            logger.error(f"{self.name}: Failed to initialize ParameterMessage with main projects link: {e}")
+
+    def after_value_set(self, parameter: Parameter, value: Any) -> None:
+        """Update the ParameterMessage when project_id changes to show a link to that specific project."""
+        if parameter.name == "project_id" and value:
+            try:
+                # Get access token and base URL
+                access_token = self._get_access_token()
+                base_url = self._get_shotgrid_config()["base_url"]
+
+                # Make API call to get project data (which includes the proper URL)
+                project_url = f"{base_url}api/v1/entity/projects/{value}"
+                headers = {
+                    "Authorization": f"Bearer {access_token}",
+                    "Accept": "application/json",
+                }
+
+                with httpx.Client() as client:
+                    response = client.get(project_url, headers=headers)
+                    if response.status_code == 200:
+                        project_data = response.json()
+                        # Get the self link from the project data
+                        shotgrid_url = project_data.get("data", {}).get("links", {}).get("self", "")
+
+                        if shotgrid_url:
+                            # Construct the full URL by combining base URL with the self link
+                            # The self link is relative (e.g., "/api/v1/entity/projects/222")
+                            # We need to convert it to a web URL (e.g., "https://griptape-ai.shotgrid.autodesk.com/detail/Project/222")
+                            full_url = f"{base_url}detail/Project/{value}"
+
+                            # Update the ParameterMessage to show the specific project
+                            message_param = self.get_element_by_name_and_type("project_message", ParameterMessage)
+                            message_param.button_text = f"View Project (ID: {value})"
+                            message_param.button_link = full_url
+                            message_param.value = f"Update project ID {value}. Click the button to view it in ShotGrid."
+
+                            logger.info(f"{self.name}: Updated project message to show project {value}")
+                        else:
+                            logger.warning(f"{self.name}: No self link found in project data for {value}")
+                    else:
+                        logger.warning(f"{self.name}: Failed to get project data for {value}: {response.status_code}")
+
+            except Exception as e:
+                logger.warning(f"{self.name}: Failed to update project message for project {value}: {e}")
+
+        return super().after_value_set(parameter, value)
+
     def process(self) -> None:
         try:
             # Get input parameters
@@ -401,6 +492,9 @@ class FlowUpdateProject(BaseShotGridNode):
             self.parameter_output_values["updated_project"] = final_project_data
 
             logger.info(f"{self.name}: Successfully updated project {project_id}")
+
+            # Update the ParameterMessage with a link to the updated project
+            self._update_project_message(project_id, project_name)
 
         except Exception as e:
             logger.error(f"{self.name} encountered an error: {e!s}")
