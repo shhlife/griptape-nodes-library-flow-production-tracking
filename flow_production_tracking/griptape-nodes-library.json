@@ -10,7 +10,7 @@
         "SHOTGRID_SCRIPT_NAME": "$SHOTGRID_SCRIPT_NAME",
         "SHOTGRID_URL": "$SHOTGRID_URL",
         "SHOTGRID_USERNAME": "$SHOTGRID_USERNAME",
-        "SHOTGRID_PASSWORD": "$SHOTGRID_PASSWORD"
+        "SHOTGRID_PASSWORD": "$SHOTGRID_PASSWORD",
       }
     }
   ],
@@ -39,6 +39,16 @@
     }
   ],
   "nodes": [
+    {
+      "class_name": "AutodeskFlowConfiguration",
+      "file_path": "flow_shotgrid_config.py",
+      "metadata": {
+        "category": "autodesk",
+        "group": "configuration",
+        "description": "Configure Autodesk Flow Production Tracking connection settings including URL, API key, and optional user credentials.",
+        "display_name": "Autodesk Flow Configuration"
+      }
+    },
     {
       "class_name": "FlowListProjects",
       "file_path": "flow_list_projects.py",
